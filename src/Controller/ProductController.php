@@ -10,18 +10,9 @@ use Psr\Log\LoggerInterface;
 
 class ProductController extends AbstractController implements DeleteInterface
 {
-    /*****************************************************
-     * We only use ProductStockLevelController for push! *
-     *****************************************************/
-
     public function __construct(CoreConfigInterface $config, LoggerInterface $logger, LoggerService $loggerService)
     {
         parent::__construct($config, $logger, $loggerService);
-    }
-
-    public function push(AbstractModel ...$models): array
-    {
-        return $models;
     }
 
     /**
