@@ -3,53 +3,16 @@
     "level": "debug"
   },
   "db": {
-    "host": "jtl-connector-db",
+    "host": "jtl-connector-global-mysql",
     "name": "jtl-connector",
     "username": "jtl-connector",
     "password": "jtl-connector"
   },
-  "token": "xxx",
-  "useGrossPrices": false,
-  "setOrderCustomerNumber": false,
-  "mapping": {
-    "paymentMethods": {
-      "prepayment": "Vorkasse",
-      "card": "Kreditkarte",
-      "credit_card": "Kreditkarte",
-      "paypal": "PayPal",
-      "invoice": "Rechnung",
-      "installment": "Ratenkauf",
-      "paylater-invoice": "Rechnung",
-      "paylater-installment": "Ratenkauf"
-    }
-  },
-  "batteryDepositCostsItems": {
-    "singlePrice": 7.50,
-    "sku": "BATTERIEPFAND01",
-    "name": "Batteriepfand",
-    "description": "Batteriepfand",
-    "vat": 19
-  },
-  "shipping": {
-    "methods": {
-      "V01PAK": "11",
-      "V54EPAK": "12",
-      "Spedition": "7",
-      "Sperrgut": ""
-    },
-    "default": "11",
-    "shippingCostItem": {
-      "sku": "FRACHT01",
-      "name": "Frachtkosten",
-      "description": "Frachtkosten"
-    }
-  },
+  "token": "1234567890",
   "pimcore": {
     "api": {
-      "useBulk": true,
-      "specialPriceUpdateDisabled": false,
-      "url": "http://mza2-nginx/api/jtl/connector",
-      "key": "xxx",
+      "url": "http://mza-nginx/api/jtl/connector",
+      "key": "1234567890",
       "auth": {
         "username": "jtl-connector",
         "password": "jtl-connector"
@@ -60,67 +23,10 @@
           "method": "POST",
           "url": "/bulkGetIds"
         },
-        "bulkDeleteProducts": {
-          "fullApiUrl": "",
-          "ignoreProductNotFound": true,
-          "method": "DELETE",
-          "url": "/bulkDeleteProducts"
-        },
-        "bulkCreateProducts": {
+        "bulkSetProductsDataGlobal": {
           "fullApiUrl": "",
           "method": "POST",
-          "url": "/bulkCreateProducts"
-        },
-        "bulkSetProductData": {
-          "fullApiUrl": "",
-          "method": "POST",
-          "url": "/bulkSetProductData"
-        },
-        "getId": {
-          "fullApiUrl": "",
-          "method": "GET",
-          "url": "/getId?setPublished=1&sku={sku}"
-        },
-        "setProductStockLevel": {
-          "fullApiUrl": "",
-          "method": "POST",
-          "url": "/setProductStockLevel"
-        },
-        "setProductPrice": {
-          "fullApiUrl": "",
-          "method": "POST",
-          "url": "/setProductPrice"
-        },
-        "setProductData": {
-          "fullApiUrl": "",
-          "method": "POST",
-          "url": "/setProductData"
-        },
-        "getOrders": {
-          "fullApiUrl": "",
-          "method": "GET",
-          "url": "/getOrders"
-        },
-        "getCustomers": {
-          "fullApiUrl": "",
-          "method": "GET",
-          "url": "/getCustomers"
-        },
-        "createProduct": {
-          "fullApiUrl": "",
-          "method": "POST",
-          "url": "/createProduct"
-        },
-        "deleteProduct": {
-          "fullApiUrl": "",
-          "ignoreProductNotFound": true,
-          "method": "DELETE",
-          "url": "/deleteProduct"
-        },
-        "getPayments": {
-          "fullApiUrl": "",
-          "method": "GET",
-          "url": "/getPayments"
+          "url": "/bulkSetProductsDataGlobal"
         }
       }
     }
