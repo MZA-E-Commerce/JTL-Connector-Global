@@ -42,17 +42,7 @@ abstract class AbstractController
     /**
      * @var string
      */
-    protected const UPDATE_TYPE_PRODUCT = 'setProductData';
-
-    /**
-     * @var string
-     */
-    protected const UPDATE_TYPE_PRODUCT_STOCK_LEVEL = 'setProductStockLevel';
-
-    /**
-     * @var string
-     */
-    protected const UPDATE_TYPE_PRODUCT_PRICE = 'setProductPrice';
+    protected const UPDATE_TYPE_PRODUCT = 'bulkSetProductsDataGlobal';
 
     /**
      * @var CoreConfigInterface
@@ -92,18 +82,6 @@ abstract class AbstractController
     }
 
     /**
-     * Check whether the current request is served by the GLOBAL domain.
-     * The GLOBAL connector is exclusively responsible for stock-level pushes;
-     * all other product-related pushes (product data, prices) are handled
-     * by the non-GLOBAL (PIMCORE) connector.
-     */
-    protected function isGlobalDomain(): bool
-    {
-        $domain = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
-        return stripos($domain, 'global') !== false;
-    }
-
-    /**
      * Template‑Method for all Controllers
      *
      * @param AbstractModel ...$models
@@ -112,166 +90,88 @@ abstract class AbstractController
      */
     public function push(AbstractModel ...$models): array
     {
+        // Always use bulk!
+
         $errors = [];
 
-        $useBulk = $this->config->get('pimcore.api.useBulk', false);
+        $pushStartTime = microtime(true);
 
-        if ($useBulk) {
-
-            $pushStartTime = microtime(true);
-
-            $products = array_filter($models, fn($m) => $m instanceof Product);
-            if (empty($products)) {
-                return $models;
-            }
-
-            $this->loggerService->get('bulk')->info(sprintf(
-                'BULK Push started: %d products.',
-                count($products)
-            ));
-
-            // Get Pimcore Ids (bulk)
-            $skuToProduct = [];
-            foreach ($products as $product) {
-                $skuToProduct[$product->getSku()] = $product;
-            }
-
-            $skus = array_keys($skuToProduct);
-            $t0 = microtime(true);
-            $pimcoreIds = $this->bulkGetPimcoreIds($skus);
-            $this->loggerService->get('bulk')->info(sprintf(
-                '[TIMING] bulkGetPimcoreIds (%d SKUs): %.3fs',
-                count($skus), microtime(true) - $t0
-            ));
-
-            $this->loggerService->get('bulk')->info(sprintf(
-                'BULK Got pimcore IDs: %s.',
-                print_r($pimcoreIds, true)
-            ));
-
-            $existingProducts = [];
-            $newProducts = [];
-
-            foreach ($products as $product) {
-                /**
-                 * @var $product Product
-                 */
-                $sku = $product->getSku();
-
-                if (isset($pimcoreIds[$sku]) && $pimcoreIds[$sku] > 0) {
-                    // Product exists -> Update
-                    $identity = new Identity($pimcoreIds[$sku], $product->getId()->getHost());
-                    $product->setId($identity);
-                    $existingProducts[] = $product;
-                } else {
-                    // Product does not exists -> Create product
-                    $newProducts[] = $product;
-                }
-            }
-
-            $this->loggerService->get('bulk')->info(sprintf(
-                'BULK products: %d existing and %d new product(s).',
-                count($existingProducts),
-                count($newProducts)
-            ));
-
-            if (!empty($newProducts)) {
-                try {
-                    $t0 = microtime(true);
-                    $this->bulkCreatePimcoreProducts($newProducts);
-                    $this->loggerService->get('bulk')->info(sprintf(
-                        '[TIMING] bulkCreatePimcoreProducts (%d products): %.3fs',
-                        count($newProducts), microtime(true) - $t0
-                    ));
-                    $this->loggerService->get('bulk')->error('BULK Creation Executed');
-                } catch (\Throwable $e) {
-                    $this->loggerService->get('bulk')->error('BULK Create error: ' . $e->getMessage());
-                }
-            }
-
-            if (!empty($existingProducts)) {
-                try {
-                    $t0 = microtime(true);
-                    $this->bulkUpdateProductsPimcore($existingProducts, $this->getUpdateType());
-                    $this->loggerService->get('bulk')->info(sprintf(
-                        '[TIMING] bulkUpdateProductsPimcore (%d products, type=%s): %.3fs',
-                        count($existingProducts), $this->getUpdateType(), microtime(true) - $t0
-                    ));
-                } catch (\Throwable $e) {
-                    $this->loggerService->get('bulk')->error('BULK Update error: ' . $e->getMessage());
-                }
-            }
-
-            $this->loggerService->get('bulk')->info(sprintf(
-                '[TIMING] Controller::push() total: %.3fs',
-                microtime(true) - $pushStartTime
-            ));
-
-            $this->loggerService->get('bulk')->info(sprintf(
-                'BULK Push finished: %d successful, %d error(s)',
-                count($products) - count($errors),
-                count($errors)
-            ));
-
-            if (!empty($errors)) {
-                $errorMessage = 'Errors occurred while processing models: ' . json_encode($errors);
-                throw new \RuntimeException($errorMessage);
-            }
-
-            return $models;
-
-        } else {
-
-            // Do not use bulk...
-
-            foreach ($models as $i => $model) {
-                // Check type
-                if (!$model instanceof Product) {
-                    $this->logger->error('Invalid model type. Expected Product, got ' . get_class($model));
-                    continue;
-                }
-
-                $identity = $model->getId();
-
-                // Get Pimcore ID
-                try {
-                    $pimcoreId = $this->getPimcoreId($model->getSku());
-                } catch (\Throwable $e) {
-                    $this->loggerService->get('pimcore')->error('Error fetching Pimcore ID for SKU ' . $model->getSku() . ': ' . $e->getMessage() . '. Try to create a new product in Pimcore.');
-                    try {
-                        $this->createPimcoreProduct($model);
-                    } catch (\Throwable $e) {
-                        $this->loggerService->get('pimcore')->error('Error creating Pimcore product: ' . $e->getMessage());
-                        continue;
-                    }
-                }
-
-                /*
-                 * IS THIS NEEDED?? Where does the pimcore ID go? Where does the Identity go?
-                $identity = new Identity($pimcoreId, $identity->getHost());
-                $model->setId($identity);
-
-                // Hook for the update
-                try {
-                    $this->updateModel($model);
-                    $models[$i] = $model;
-                } catch (\Throwable $e) {
-                    $this->logger->error('Error in updateModel(): ' . $e->getMessage());
-                    $errors[] = [
-                        'sku' => $model->getSku(),
-                        'error' => $e->getMessage()
-                    ];
-                    continue;
-                }*/
-            }
-
-            if (!empty($errors)) {
-                $errorMessage = 'Errors occurred while processing models: ' . json_encode($errors);
-                throw new \RuntimeException($errorMessage);
-            }
-
+        $products = array_filter($models, fn($m) => $m instanceof Product);
+        if (empty($products)) {
             return $models;
         }
+
+        $this->loggerService->get('bulk')->info(sprintf(
+            'BULK Push started: %d products.',
+            count($products)
+        ));
+
+        // Get Pimcore Ids (bulk)
+        $skuToProduct = [];
+        foreach ($products as $product) {
+            $skuToProduct[$product->getSku()] = $product;
+        }
+
+        $skus = array_keys($skuToProduct);
+        $t0 = microtime(true);
+        $pimcoreIds = $this->bulkGetPimcoreIds($skus);
+        $this->loggerService->get('bulk')->info(sprintf(
+            '[TIMING] bulkGetPimcoreIds (%d SKUs): %.3fs',
+            count($skus), microtime(true) - $t0
+        ));
+
+        $this->loggerService->get('bulk')->info(sprintf(
+            'BULK Got pimcore IDs: %s.',
+            print_r($pimcoreIds, true)
+        ));
+
+        $existingProducts = [];
+        $newProducts = [];
+
+        foreach ($products as $product) {
+            /**
+             * @var $product Product
+             */
+            $sku = $product->getSku();
+
+            if (isset($pimcoreIds[$sku]) && $pimcoreIds[$sku] > 0) {
+                // Product exists -> Update
+                $identity = new Identity($pimcoreIds[$sku], $product->getId()->getHost());
+                $product->setId($identity);
+                $existingProducts[] = $product;
+            }
+        }
+
+        if (!empty($existingProducts)) {
+            try {
+                $t0 = microtime(true);
+                $this->bulkUpdateProductsPimcore($existingProducts);
+                $this->loggerService->get('bulk')->info(sprintf(
+                    '[TIMING] bulkUpdateProductsPimcore (%d products, type=stockLevel): %.3fs',
+                    count($existingProducts), microtime(true) - $t0
+                ));
+            } catch (\Throwable $e) {
+                $this->loggerService->get('bulk')->error('BULK Update error: ' . $e->getMessage());
+            }
+        }
+
+        $this->loggerService->get('bulk')->info(sprintf(
+            '[TIMING] Controller::push() total: %.3fs',
+            microtime(true) - $pushStartTime
+        ));
+
+        $this->loggerService->get('bulk')->info(sprintf(
+            'BULK Push finished: %d successful, %d error(s)',
+            count($products) - count($errors),
+            count($errors)
+        ));
+
+        if (!empty($errors)) {
+            $errorMessage = 'Errors occurred while processing models: ' . json_encode($errors);
+            throw new \RuntimeException($errorMessage);
+        }
+
+        return $models;
     }
 
     /**
@@ -306,303 +206,6 @@ abstract class AbstractController
             ],
             'auth_basic' => [$this->config->get('pimcore.api.auth.username'), $this->config->get('pimcore.api.auth.password')]
         ]);
-    }
-
-    /**
-     * @param string $sku
-     * @return int
-     */
-    protected function getPimcoreId(string $sku): int
-    {
-        if (empty($sku)) {
-            throw new \RuntimeException('SKU is empty');
-        }
-
-        $url = $this->getEndpointUrl('getId');
-        $fullApiUrl = str_replace('{sku}', $sku, $url);
-        $client = $this->getHttpClient();
-
-        try {
-            $response = $client->request($this->config->get('pimcore.api.endpoints.getId.method'), $fullApiUrl);
-
-            $statusCode = $response->getStatusCode();
-            $data = $response->toArray();
-
-            if ($statusCode === 200 && isset($data['success']) && $data['success'] === true) {
-                return (int)$data['id'];
-            }
-            $this->loggerService->get('getPimcoreId')->error('Pimcore API error: ' . ($data['error'] ?? 'Unknown error'));
-            throw new \RuntimeException('Pimcore API error: ' . ($data['error'] ?? 'Unknown error'));
-
-        } catch (TransportExceptionInterface|HttpExceptionInterface|DecodingExceptionInterface $e) {
-            $this->loggerService->get('getPimcoreId')->error('HTTP request failed: ' . $e->getMessage());
-            throw new \RuntimeException('HTTP request failed: ' . $e->getMessage(), 0, $e);
-        }
-    }
-
-    /**
-     * @param Product $product
-     * @param string $type
-     * @return void
-     * @throws TransportExceptionInterface
-     * @throws ClientExceptionInterface
-     * @throws RedirectionExceptionInterface
-     * @throws ServerExceptionInterface
-     */
-    protected function updateProductPimcore(Product $product, string $type = self::UPDATE_TYPE_PRODUCT): void
-    {
-        $httpMethod = $this->config->get('pimcore.api.endpoints.' . $type . '.method');
-        $client = $this->getHttpClient();
-        $fullApiUrl = $this->getEndpointUrl($type);
-
-        // Set id of Pimcore product
-        $postData = [
-            'id' => $product->getId()->getEndpoint(),
-            'jtlId' => (string)$product->getId()->getHost(),
-            'uvp' => null,
-            'netPrice' => null,
-            'stockLevel' => null,
-            'customerGroup' => self::PIMCORE_CUSTOMER_TYPE_B2C,
-            'jtlShippingClassId' => (int)$product->getShippingClassId()?->getHost(),
-            'isFromGlobalConnector' => $this->isGlobalDomain(),
-        ];
-
-        switch ($type) {
-            case self::UPDATE_TYPE_PRODUCT_STOCK_LEVEL:
-                $this->loggerService->get('updateProductPimcore')->info('Updating product stock level (SKU: ' . $product->getSku() . ')');
-                $postData['stockLevel'] = $product->getStockLevel();
-                break;
-            case self::UPDATE_TYPE_PRODUCT_PRICE:
-                $this->loggerService->get('updateProductPimcore')->info('Updating product price (SKU: ' . $product->getSku() . ')');
-                $postData['netPrice'] = $this->getNetPrice($product);
-                $postData['specialPrice'] = $this->getSpecialPrice($product);
-                break;
-            case self::UPDATE_TYPE_PRODUCT: // Check JTL WaWi setting "Artikel komplett senden"!!
-
-                $this->loggerService->get('updateProductPimcore')->info('Updating product in Pimcore (SKU: ' . $product->getSku() . ')');
-
-                $postData['netPrice'] = $this->getNetPrice($product);
-                $postData['specialPrice'] = $this->getSpecialPrice($product);
-
-                $useGrossPrices = $this->config->get('useGrossPrices');
-                if ($useGrossPrices) {
-                    $uvp = $product->getRecommendedRetailPrice();
-                    if (!is_null($uvp)) {
-                        $vat = $product->getVat();
-                        $uvp = round($uvp * (1 + $vat / 100), 4);
-                    }
-                } else {
-                    $uvp = $product->getRecommendedRetailPrice();
-                }
-
-                // Set UVP price
-                $postData['uvp'] = $uvp;
-                break;
-        }
-
-        $this->loggerService->get('temp')->info('Post data (' . $fullApiUrl . '): ' . json_encode($postData));
-
-        // Tax rate
-        $postData['taxRate'] = $product->getVat();
-
-        try {
-            $response = $client->request($httpMethod, $fullApiUrl, ['json' => $postData]);
-
-            $statusCode = $response->getStatusCode();
-            $responseData = $response->toArray();
-
-            if ($statusCode !== 200) {
-                $this->loggerService->get('updateProductPimcore')->error('Product updated failed in Pimcore (SKU: ' . $product->getSku() . ')' . ', Error: ' . ($responseData['error'] ?? 'Unknown error'));
-            }
-
-            if ($statusCode === 200 && isset($responseData['success']) && $responseData['success'] === true) {
-                $this->loggerService->get('updateProductPimcore')->info('Product updated successfully in Pimcore (SKU: ' . $product->getSku() . ')');
-                return;
-            }
-            $this->loggerService->get('updateProductPimcore')->error('Pimcore API error: ' . ($responseData['error'] ?? 'Unknown error'));
-            throw new \RuntimeException('Pimcore API error: ' . ($responseData['error'] ?? 'Unknown error'));
-
-        } catch (TransportExceptionInterface|HttpExceptionInterface|DecodingExceptionInterface $e) {
-            if (method_exists($e, 'getResponse') && $e->getResponse() instanceof \Symfony\Contracts\HttpClient\ResponseInterface) {
-                $errorMessage = $e->getResponse()?->getContent(false);
-            } else {
-                $errorMessage = $e->getMessage();
-            }
-            $this->loggerService->get('updateProductPimcore')->error($errorMessage);
-            throw new \RuntimeException($errorMessage, $e->getCode(), $e);
-        }
-    }
-
-    /**
-     * @param Product $model
-     * @return void
-     */
-    abstract protected function updateModel(Product $model): void;
-
-    /**
-     * Returns the update type for bulk operations.
-     * Override in child controllers to specify the update type.
-     */
-    protected function getUpdateType(): string
-    {
-        return self::UPDATE_TYPE_PRODUCT;
-    }
-
-    private function getSpecialPrice(Product $product): array
-    {
-        $specialPrice = [];
-
-        if (empty($product->getSpecialPrices())) {
-            return $specialPrice;
-        }
-
-        foreach ($product->getSpecialPrices() as $priceModel) {
-            if ($priceModel->getItems()) {
-                foreach ($priceModel->getItems() as $item) {
-                    if ($item->getCustomerGroupId()->getEndpoint() == self::CUSTOMER_TYPE_B2C) {
-                        $specialPrice = [
-                            'priceNet' => $item->getPriceNet(),
-                            'activeFromDate' => $priceModel->getActiveFromDate(),
-                            'activeUntilDate' => $priceModel->getActiveUntilDate(),
-                            'considerDateLimit' => $priceModel->getConsiderDateLimit()
-                        ];
-                    }
-                }
-            }
-        }
-
-        return $specialPrice;
-    }
-
-    /**
-     * @param Product $product
-     * @return float|null
-     */
-    private function getNetPrice(Product $product): ?float
-    {
-        $netPrice = null;
-
-        foreach ($product->getPrices() as $priceModel) {
-            if ($priceModel->getCustomerGroupId()->getEndpoint() == self::CUSTOMER_TYPE_B2C) {
-                foreach ($priceModel->getItems() as $item) {
-                    $netPrice = $item->getNetPrice();
-                    break 2;
-                }
-            }
-        }
-
-        return $netPrice;
-    }
-
-    /**
-     * @param Product $product
-     * @return int
-     * @throws ClientExceptionInterface
-     * @throws RedirectionExceptionInterface
-     * @throws ServerExceptionInterface
-     * @throws TransportExceptionInterface
-     */
-    private function createPimcoreProduct(Product $product): void
-    {
-        $httpMethod = $this->config->get('pimcore.api.endpoints.createProduct.method');
-        $client = $this->getHttpClient();
-        $fullApiUrl = $this->getEndpointUrl('createProduct');
-
-        $postData['published'] = false;
-        $postData['sku'] = $product->getSku();
-
-        $jtlId = $product->getId()?->getHost();
-        $postData['jtlId'] = $jtlId;
-
-        $postData['gtin'] = $product->getEan();
-        $postData['stockLevel'] = $product->getStockLevel();
-        $postData['vat'] = $product->getVat();
-        $postData['isActive'] = $product->getIsActive();
-
-        $name = $product->getSku() . '_NAME_NOT_SET';
-        $i18n = $product->getI18ns();
-        foreach ($i18n as $i18nModel) {
-            if ($i18nModel->getLanguageIso() === 'de' && !empty($i18nModel->getName())) {
-                $name = $i18nModel->getName();
-            }
-        }
-        $postData['name'] = $name;
-
-        try {
-            $response = $client->request($httpMethod, $fullApiUrl, ['json' => $postData]);
-
-            $statusCode = $response->getStatusCode();
-            if ($statusCode !== 200) {
-                $this->loggerService->get('createPimcoreProduct')->error('Product creation failed in Pimcore (SKU: ' . $product->getSku() . ')');
-            }
-
-            $responseData = $response->toArray();
-
-            if (
-                $statusCode === 200
-                && isset($responseData['success'])
-                && $responseData['success'] === true
-            ) {
-                $this->loggerService->get('createPimcoreProduct')->info('Product created successfully in Pimcore (SKU: ' . $product->getSku() . ')');
-                return;
-            }
-            $this->loggerService->get('createPimcoreProduct')->error('Pimcore API error: ' . ($responseData['error'] ?? 'Unknown error'));
-            throw new \RuntimeException('Pimcore API error: ' . ($responseData['error'] ?? 'Unknown error'));
-        } catch (TransportExceptionInterface|HttpExceptionInterface|DecodingExceptionInterface $e) {
-            if (method_exists($e, 'getResponse') && $e->getResponse() instanceof \Symfony\Contracts\HttpClient\ResponseInterface) {
-                $errorMessage = $e->getResponse()?->getContent(false);
-            } else {
-                $errorMessage = $e->getMessage();
-            }
-            $this->loggerService->get('createPimcoreProduct')->error($errorMessage);
-            throw new \RuntimeException($errorMessage, $e->getCode(), $e);
-        }
-    }
-
-    /**
-     * @param Product $product
-     * @return void
-     * @throws \Exception
-     */
-    protected function deleteProduct(Product $product): void
-    {
-        $postData['jtlId'] = $product->getId()->getHost();
-        $postData['sku'] = $product->getSku() ?: null;
-
-        $client = $this->getHttpClient();
-        $fullApiUrl = $this->getEndpointUrl('deleteProduct');
-        $httpMethod = $this->config->get('pimcore.api.endpoints.deleteProduct.method');
-
-        $ignoreProductNotFound = $this->config->get('pimcore.api.endpoints.deleteProduct.ignoreProductNotFound');
-
-        $this->loggerService->get('deleteProduct')->info($httpMethod . ' -> ' . $fullApiUrl . ' -> ' . json_encode($postData));
-
-        try {
-            $response = $client->request($httpMethod, $fullApiUrl, ['json' => $postData]);
-            $statusCode = $response->getStatusCode();
-            $responseData = $response->toArray();
-
-            if ($statusCode === 200 && isset($responseData['success'])
-                && $responseData['success'] === true
-                && !empty($responseData['id'])) {
-                $this->loggerService->get('deleteProduct')->info('Product deleted successfully in Pimcore (PIM-ID: ' . $responseData['id'] . ')');
-                return;
-            }
-
-            if ($statusCode === 404 && $ignoreProductNotFound === true) {
-                $this->loggerService->get('deleteProduct')->info('Product not found in Pimcore!');
-                return;
-            }
-
-            throw new \RuntimeException('API error: ' . ($responseData['error'] ?? 'Unknown error'));
-        } catch (TransportExceptionInterface|HttpExceptionInterface|DecodingExceptionInterface $e) {
-            if ($e->getCode() === 404 && $ignoreProductNotFound === true) {
-                $this->loggerService->get('deleteProduct')->info('Product not found in Pimcore!');
-                return;
-            }
-            $this->loggerService->get('deleteProduct')->error('HTTP request failed: ' . $e->getMessage());
-            throw new \RuntimeException('HTTP request failed: ' . $e->getMessage(), 0, $e);
-        }
     }
 
     /**
@@ -647,75 +250,6 @@ abstract class AbstractController
 
     /**
      * @param array $products
-     * @return array
-     * @throws ClientExceptionInterface
-     * @throws DecodingExceptionInterface
-     * @throws RedirectionExceptionInterface
-     * @throws ServerExceptionInterface
-     * @throws TransportExceptionInterface
-     * @throws \Throwable
-     */
-    protected function bulkCreatePimcoreProducts(array $products): void
-    {
-        if (empty($products)) {
-            return;
-        }
-
-        $this->loggerService->get('bulk')->info('BULK Create: ' . count($products) . ' Products');
-
-        $client = $this->getHttpClient();
-
-        $fullApiUrl = $this->getEndpointUrl('bulkCreateProducts');
-        $httpMethod = $this->config->get('pimcore.api.endpoints.bulkCreateProducts.method');
-
-        // Prepare Products for Bulk-Request
-        $bulkData = [];
-        foreach ($products as $product) {
-            $name = $product->getSku() . '_NAME_NOT_SET';
-            foreach ($product->getI18ns() as $i18nModel) {
-                if ($i18nModel->getLanguageIso() === 'de' && !empty($i18nModel->getName())) {
-                    $name = $i18nModel->getName();
-                    break;
-                }
-            }
-
-            $bulkData[] = [
-                'sku' => $product->getSku(),
-                'jtlId' => $product->getId()?->getHost(),
-                'gtin' => $product->getEan(),
-                'stockLevel' => $product->getStockLevel(),
-                'vat' => $product->getVat(),
-                'isActive' => $product->getIsActive(),
-                'name' => $name,
-                'published' => false
-            ];
-        }
-
-        try {
-            $response = $client->request($httpMethod, $fullApiUrl, [
-                'json' => ['products' => $bulkData]
-            ]);
-
-            $statusCode = $response->getStatusCode();
-            $data = $response->toArray();
-
-            if ($statusCode === 200 && isset($data['success']) && $data['success'] === true) {
-                // Format: { "success": true, "created": { "SKU1": 123, "SKU2": 456 } }
-                $this->loggerService->get('bulk')->info('BULK Create successful: ' . count($data['created'] ?? []) . ' created');
-                return;
-            }
-
-            throw new \RuntimeException('BULK Create API Error: ' . ($data['error'] ?? 'Unknown error'));
-
-        } catch (\Throwable $e) {
-            $this->loggerService->get('bulk')->error('BULK Create error: ' . $e->getMessage());
-            throw $e;
-        }
-    }
-
-    /**
-     * @param array $products
-     * @param string $type
      * @return void
      * @throws ClientExceptionInterface
      * @throws DecodingExceptionInterface
@@ -724,20 +258,18 @@ abstract class AbstractController
      * @throws TransportExceptionInterface
      * @throws \Throwable
      */
-    protected function bulkUpdateProductsPimcore(array $products, string $type = self::UPDATE_TYPE_PRODUCT): void
+    protected function bulkUpdateProductsPimcore(array $products): void
     {
         if (empty($products)) {
             return;
         }
 
-        $specialPriceUpdateDisabled = $this->config->get('pimcore.api.specialPriceUpdateDisabled', false);
-
-        $this->loggerService->get('bulk')->info('BULK Update (' . $type . '): ' . count($products) . ' product(s)');
+        $this->loggerService->get('bulk')->info('BULK Update (stockLevel): ' . count($products) . ' product(s)');
 
         $client = $this->getHttpClient();
 
-        $fullApiUrl = $this->getEndpointUrl('bulkSetProductsData');
-        $httpMethod = $this->config->get('pimcore.api.endpoints.bulkSetProductsData.method');
+        $fullApiUrl = $this->getEndpointUrl(self::UPDATE_TYPE_PRODUCT);
+        $httpMethod = $this->config->get('pimcore.api.endpoints.' . self::UPDATE_TYPE_PRODUCT . '.method');
 
         // Prepare Products for Bulk-Request
         $bulkData = [];
@@ -749,55 +281,15 @@ abstract class AbstractController
                 'id' => $product->getId()->getEndpoint(),
                 'jtlId' => (string)$product->getId()->getHost(),
                 'sku' => $product->getSku(),
-                'customerGroup' => self::PIMCORE_CUSTOMER_TYPE_B2C,
-                'jtlShippingClassId' => (int)$product->getShippingClassId()?->getHost(),
-                'taxRate' => $product->getVat(),
-                'isFromGlobalConnector' => $this->isGlobalDomain(),
+                'stockLevel' => $product->getStockLevel(),
             ];
-
-            switch ($type) {
-                case self::UPDATE_TYPE_PRODUCT_STOCK_LEVEL:
-                    $productData['stockLevel'] = $product->getStockLevel();
-                    break;
-
-                case self::UPDATE_TYPE_PRODUCT_PRICE:
-                    $productData['netPrice'] = $this->getNetPrice($product);
-
-                    $productData['specialPrice'] = [];
-                    if ($specialPriceUpdateDisabled === false) {
-                        $productData['specialPrice'] = $this->getSpecialPrice($product);
-                    }
-                    break;
-
-                case self::UPDATE_TYPE_PRODUCT:
-                default:
-                    $productData['uvp'] = null;
-                    $productData['stockLevel'] = $product->getStockLevel();
-                    $productData['netPrice'] = $this->getNetPrice($product);
-
-                    $productData['specialPrice'] = [];
-                    if ($specialPriceUpdateDisabled === false) {
-                        $productData['specialPrice'] = $this->getSpecialPrice($product);
-                    }
-
-                    $useGrossPrices = $this->config->get('useGrossPrices');
-                    $uvp = $product->getRecommendedRetailPrice();
-                    if ($useGrossPrices && !is_null($uvp)) {
-                        $vat = $product->getVat();
-                        $uvp = round($uvp * (1 + $vat / 100), 4);
-                        $productData['uvp'] = $uvp;
-                    } elseif (!$useGrossPrices && !is_null($uvp)) {
-                        $productData['uvp'] = $uvp;
-                    }
-                    break;
-            }
 
             $bulkData[] = $productData;
         }
 
         $jsonData = [
             'products' => $bulkData,
-            'updateType' => $type,
+            'updateType' => self::UPDATE_TYPE_PRODUCT,
         ];
 
         $this->loggerService->get('bulk')->info(sprintf(
@@ -826,93 +318,6 @@ abstract class AbstractController
 
         } catch (\Throwable $e) {
             $this->loggerService->get('bulk')->error('BULK Update error: ' . $e->getMessage());
-            throw $e;
-        }
-    }
-
-    /**
-     * Bulk delete products in Pimcore
-     *
-     * @param array $products
-     * @return array Map of SKU => success (true/false)
-     * @throws \Throwable
-     */
-    protected function bulkDeleteProducts(array $products): array
-    {
-        if (empty($products)) {
-            return [];
-        }
-
-        $this->loggerService->get('bulk')->info('BULK Delete: ' . count($products) . ' product(s) received');
-
-        $client = $this->getHttpClient();
-
-        $fullApiUrl = $this->getEndpointUrl('bulkDeleteProducts');
-        $httpMethod = $this->config->get('pimcore.api.endpoints.bulkDeleteProducts.method');
-
-        $ignoreProductNotFound = $this->config->get('pimcore.api.endpoints.bulkDeleteProducts.ignoreProductNotFound', true);
-
-        // Prepare Products for Bulk-Request (deduplicate by jtlId)
-        $bulkData = [];
-        $seenJtlIds = [];
-        foreach ($products as $product) {
-            $jtlId = $product->getId()->getHost();
-
-            // Skip duplicates
-            if (isset($seenJtlIds[$jtlId])) {
-                $this->loggerService->get('bulk')->debug('BULK Delete: Skipping duplicate jtlId ' . $jtlId);
-                continue;
-            }
-            $seenJtlIds[$jtlId] = true;
-
-            $bulkData[] = [
-                'jtlId' => $jtlId,
-                'sku' => $product->getSku() ?: null,
-            ];
-        }
-
-        $duplicatesRemoved = count($products) - count($bulkData);
-        if ($duplicatesRemoved > 0) {
-            $this->loggerService->get('bulk')->info('BULK Delete: Removed ' . $duplicatesRemoved . ' duplicate(s), ' . count($bulkData) . ' unique product(s) to delete');
-        }
-
-        $jsonData = ['products' => $bulkData];
-
-        $this->loggerService->get('bulk')->info(sprintf(
-            'BULK Delete data to send: %s',
-            json_encode($jsonData)
-        ));
-
-        try {
-            $response = $client->request($httpMethod, $fullApiUrl, [
-                'json' => $jsonData
-            ]);
-
-            $statusCode = $response->getStatusCode();
-            $data = $response->toArray();
-
-            if ($statusCode === 200 && isset($data['success']) && $data['success'] === true) {
-                $this->loggerService->get('bulk')->info(sprintf(
-                    'BULK Delete successful: %d deleted, %d error(s)',
-                    $data['deleted'] ?? 0,
-                    $data['errors'] ?? 0
-                ));
-                return $data['results'] ?? [];
-            }
-
-            if ($statusCode === 404 && $ignoreProductNotFound === true) {
-                $this->loggerService->get('bulk')->info('BULK Delete: Some products not found in Pimcore (ignored)');
-                return $data['results'] ?? [];
-            }
-
-            throw new \RuntimeException('BULK Delete API Error: ' . ($data['error'] ?? 'Unknown error'));
-
-        } catch (\Throwable $e) {
-            if ($ignoreProductNotFound && str_contains($e->getMessage(), '404')) {
-                $this->loggerService->get('bulk')->info('BULK Delete: Products not found in Pimcore (ignored)');
-                return [];
-            }
-            $this->loggerService->get('bulk')->error('BULK Delete error: ' . $e->getMessage());
             throw $e;
         }
     }

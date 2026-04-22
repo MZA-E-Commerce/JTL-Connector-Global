@@ -1,6 +1,6 @@
 # About
 
-JTL-Connector-Core (JTL-WaWi <-> Pimcore)
+JTL-Connector-Global (JTL-WaWi <-> Pimcore)
 
 The official implementation of the protocol used by JTL-Connector and JTL-Wawi.
 You are free to use this library in your endpoint implementations. 

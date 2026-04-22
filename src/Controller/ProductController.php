@@ -10,27 +10,18 @@ use Psr\Log\LoggerInterface;
 
 class ProductController extends AbstractController implements DeleteInterface
 {
+    /*****************************************************
+     * We only use ProductStockLevelController for push! *
+     *****************************************************/
+
     public function __construct(CoreConfigInterface $config, LoggerInterface $logger, LoggerService $loggerService)
     {
         parent::__construct($config, $logger, $loggerService);
     }
 
-    /**
-     * The GLOBAL domain must not push product data to Pimcore (only stock levels).
-     */
     public function push(AbstractModel ...$models): array
     {
-        if ($this->isGlobalDomain()) {
-            $this->logger->info('Product push skipped: the GLOBAL domain only pushes stock levels, not product data.');
-            return $models;
-        }
-
-        return parent::push(...$models);
-    }
-
-    protected function updateModel(Product $model): void
-    {
-        $this->updateProductPimcore($model);
+        return $models;
     }
 
     /**
@@ -38,48 +29,6 @@ class ProductController extends AbstractController implements DeleteInterface
      */
     public function delete(AbstractModel ...$models): array
     {
-        $useBulk = $this->config->get('pimcore.api.useBulk', false);
-
-        // Filter valid Product models
-        $products = [];
-        foreach ($models as $model) {
-            if (!$model instanceof Product) {
-                $this->logger->error('Invalid model type. Expected Product, got ' . get_class($model));
-                continue;
-            }
-            $products[] = $model;
-        }
-
-        if (empty($products)) {
-            return $models;
-        }
-
-        if ($useBulk) {
-            $this->loggerService->get('bulk')->info(sprintf(
-                'BULK Delete started: %d product(s)',
-                count($products)
-            ));
-
-            try {
-                $this->bulkDeleteProducts($products);
-                $this->loggerService->get('bulk')->info('BULK Delete finished successfully');
-            } catch (\Throwable $e) {
-                $this->loggerService->get('bulk')->error('BULK Delete error: ' . $e->getMessage());
-                throw $e;
-            }
-        } else {
-            // Single delete fallback
-            foreach ($products as $product) {
-                $this->logger->info(\sprintf(
-                    'Product delete requested (host=%d, sku/endpoint=%s)',
-                    $product->getId()->getHost(),
-                    $product->getId()->getEndpoint()
-                ));
-
-                $this->deleteProduct($product);
-            }
-        }
-
         return $models;
     }
 }

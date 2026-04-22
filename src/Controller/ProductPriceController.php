@@ -14,26 +14,8 @@ class ProductPriceController extends AbstractController
         parent::__construct($config, $logger, $loggerService);
     }
 
-    /**
-     * The GLOBAL domain must not push prices to Pimcore (only stock levels).
-     */
     public function push(AbstractModel ...$models): array
     {
-        if ($this->isGlobalDomain()) {
-            $this->logger->info('ProductPrice push skipped: the GLOBAL domain only pushes stock levels, not prices.');
-            return $models;
-        }
-
-        return parent::push(...$models);
-    }
-
-    protected function updateModel(Product $model): void
-    {
-        $this->updateProductPimcore($model, self::UPDATE_TYPE_PRODUCT_PRICE);
-    }
-
-    protected function getUpdateType(): string
-    {
-        return self::UPDATE_TYPE_PRODUCT_PRICE;
+        return $models;
     }
 }
