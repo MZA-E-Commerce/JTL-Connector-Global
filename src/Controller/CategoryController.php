@@ -18,9 +18,6 @@ class CategoryController implements PushInterface
      */
     public function push(AbstractModel ...$model): array
     {
-        # Host-ID => Die ID aus dem JTL-Wawi-System
-        # Endpoint (ID) => Die ID im externen System (Pimcore, Shopware, Magento, etc.)
-
         return $model;
     }
 }

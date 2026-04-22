@@ -17,9 +17,4 @@ class DeliveryNoteController extends AbstractController
     {
         return [];
     }
-
-    protected function updateModel(Product $model): void
-    {
-        // TODO: Implement updateModel() method.
-    }
 }
