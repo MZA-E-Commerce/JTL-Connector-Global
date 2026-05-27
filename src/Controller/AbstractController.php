@@ -139,6 +139,29 @@ abstract class AbstractController
                 $identity = new Identity($pimcoreIds[$sku], $product->getId()->getHost());
                 $product->setId($identity);
                 $existingProducts[] = $product;
+            } else {
+                // Product does not exists -> Create product
+                $newProducts[] = $product;
+            }
+
+            $this->loggerService->get('bulk')->info(sprintf(
+                'BULK products: %d existing and %d new product(s).',
+                count($existingProducts),
+                count($newProducts)
+            ));
+        }
+
+        if (!empty($newProducts)) {
+            try {
+                $t0 = microtime(true);
+                $this->bulkCreatePimcoreProducts($newProducts);
+                $this->loggerService->get('bulk')->info(sprintf(
+                    '[TIMING] bulkCreatePimcoreProducts (%d products): %.3fs',
+                    count($newProducts), microtime(true) - $t0
+                ));
+                $this->loggerService->get('bulk')->error('BULK Creation Executed');
+            } catch (\Throwable $e) {
+                $this->loggerService->get('bulk')->error('BULK Create error: ' . $e->getMessage());
             }
         }
 
@@ -245,6 +268,73 @@ abstract class AbstractController
         } catch (\Throwable $e) {
             $this->loggerService->get('bulk')->error('BULK GetIds HTTP error: ' . $e->getMessage());
             return [];
+        }
+    }
+
+    /**
+     * @param array $products
+     * @return void
+     * @throws ClientExceptionInterface
+     * @throws DecodingExceptionInterface
+     * @throws RedirectionExceptionInterface
+     * @throws ServerExceptionInterface
+     * @throws TransportExceptionInterface
+     * @throws \Throwable
+     */
+    protected function bulkCreatePimcoreProducts(array $products): void
+    {
+        if (empty($products)) {
+            return;
+        }
+
+        $this->loggerService->get('bulk')->info('BULK Create: ' . count($products) . ' Products');
+
+        $client = $this->getHttpClient();
+
+        $fullApiUrl = $this->getEndpointUrl('bulkCreateProducts');
+        $httpMethod = $this->config->get('pimcore.api.endpoints.bulkCreateProducts.method');
+
+        // Prepare Products for Bulk-Request
+        $bulkData = [];
+        foreach ($products as $product) {
+            $name = $product->getSku() . '_NAME_NOT_SET';
+            foreach ($product->getI18ns() as $i18nModel) {
+                if ($i18nModel->getLanguageIso() === 'de' && !empty($i18nModel->getName())) {
+                    $name = $i18nModel->getName();
+                    break;
+                }
+            }
+
+            $bulkData[] = [
+                'sku' => $product->getSku(),
+                'jtlId' => $product->getId()?->getHost(),
+                'gtin' => $product->getEan(),
+                'stockLevel' => $product->getStockLevel(),
+                'vat' => $product->getVat(),
+                'isActive' => $product->getIsActive(),
+                'name' => $name,
+                'published' => false
+            ];
+        }
+
+        try {
+            $response = $client->request($httpMethod, $fullApiUrl, [
+                'json' => ['products' => $bulkData]
+            ]);
+
+            $statusCode = $response->getStatusCode();
+            $data = $response->toArray();
+
+            if ($statusCode === 200 && isset($data['success']) && $data['success'] === true) {
+                $this->loggerService->get('bulk')->info('BULK Create successful');
+                return;
+            }
+
+            throw new \RuntimeException('BULK Create API Error: ' . ($data['error'] ?? 'Unknown error'));
+
+        } catch (\Throwable $e) {
+            $this->loggerService->get('bulk')->error('BULK Create error: ' . $e->getMessage());
+            throw $e;
         }
     }
 

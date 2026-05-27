@@ -27,6 +27,11 @@
           "fullApiUrl": "",
           "method": "POST",
           "url": "/bulkSetProductsDataGlobal"
+        },
+        "bulkCreateProducts": {
+          "fullApiUrl": "",
+          "method": "POST",
+          "url": "/bulkCreateProducts"
         }
       }
     }
